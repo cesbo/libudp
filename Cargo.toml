@@ -1,5 +1,5 @@
 [package]
-name = "socket"
+name = "udp"
 version = "0.1.0"
 authors = ["Andrey Dyldin <and@cesbo.com>"]
 
