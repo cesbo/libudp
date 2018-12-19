@@ -3,7 +3,7 @@ use std::{io, mem};
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 use std::os::unix::io::{RawFd, AsRawFd};
 
-use base;
+use crate::base;
 
 /// UDP Socket
 ///
@@ -138,7 +138,7 @@ impl UdpSocket {
                     if x.ifname.len() > 0 {
                         let ifaddr = ifname_to_addr(x.fd, &x.ifname)?;
                         match ifaddr {
-                            SocketAddr::V4(ref v) => base::setsockopt(x.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_IF, &u32::from(*v.ip()))?,
+                            SocketAddr::V4(ref v) => base::setsockopt(x.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_IF, &u32::from(*v.ip()).to_be())?,
                             _ => unreachable!(),
                         };
                     }
