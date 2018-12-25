@@ -3,7 +3,7 @@ use std::{io, mem};
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 use std::os::unix::io::{RawFd, AsRawFd};
 
-use crate::base;
+mod base;
 
 /// UDP Socket
 ///

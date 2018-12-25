@@ -1,3 +1,6 @@
-mod base;
-mod udp;
-pub use self::udp::UdpSocket;
+
+#[cfg(unix)]
+mod unix;
+
+#[cfg(unix)]
+pub use crate::unix::UdpSocket;
