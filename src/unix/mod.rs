@@ -1,5 +1,5 @@
 use libc;
-use std::{io, mem};
+use std::{io, mem, fmt};
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 use std::os::unix::io::{RawFd, AsRawFd};
 
@@ -87,6 +87,16 @@ pub struct UdpSocket {
     addr: SocketAddr,
     fd: libc::c_int,
     mreq: Option<group_req>,
+}
+
+impl fmt::Debug for UdpSocket {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("UdpSocket")
+            .field("fd", &self.fd)
+            .field("ifname", &self.ifname)
+            .field("addr", &self.addr)
+            .finish()
+    }
 }
 
 impl UdpSocket {
