@@ -39,13 +39,15 @@ const MCAST_LEAVE_GROUP: libc::c_int = 45;
 
 //
 
-#[inline]
-pub fn cvt(result: i32) -> io::Result<i32> {
-    if result != -1 {
-        Ok(result)
-    } else {
-        Err(io::Error::last_os_error())
-    }
+macro_rules! cvt {
+    ($fn: expr) => ({
+        let result = unsafe { $fn };
+        if result != -1 {
+            Ok(result)
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    })
 }
 
 /// setsockopt wrapper
@@ -53,7 +55,7 @@ pub fn cvt(result: i32) -> io::Result<i32> {
 fn setsockopt<T>(fd: libc::c_int, level: libc::c_int, name: libc::c_int, value: &T) -> io::Result<()> {
     let size = mem::size_of_val::<T>(value) as libc::socklen_t;
     let value = value as *const T as *const libc::c_void;
-    cvt(unsafe { libc::setsockopt(fd, level, name, value, size) })?;
+    cvt!(libc::setsockopt(fd, level, name, value, size))?;
     Ok(())
 }
 
@@ -75,7 +77,7 @@ fn ifname_to_index(fd: libc::c_int, ifname: &str) -> io::Result<libc::c_int> {
 
     let mut ifr: ifreq_ifindex = unsafe { mem::zeroed() };
     ifr.ifr_name[.. ifname.len()].copy_from_slice(ifname.as_bytes());
-    cvt(unsafe { libc::ioctl(fd, SIOCGIFINDEX, &mut ifr as *mut ifreq_ifindex as *mut libc::c_void) })?;
+    cvt!(libc::ioctl(fd, SIOCGIFINDEX, &mut ifr as *mut ifreq_ifindex as *mut libc::c_void))?;
     Ok(ifr.ifr_ifindex)
 }
 
@@ -95,7 +97,7 @@ fn get_ifaddr_v4(fd: libc::c_int, ifname: &str) -> io::Result<libc::in_addr_t> {
 
     let mut ifr: ifreq_ifaddr = unsafe { mem::zeroed() };
     ifr.ifr_name[.. ifname.len()].copy_from_slice(ifname.as_bytes());
-    cvt(unsafe { libc::ioctl(fd, libc::SIOCGIFADDR, &mut ifr as *mut ifreq_ifaddr as *mut libc::c_void) })?;
+    cvt!(libc::ioctl(fd, libc::SIOCGIFADDR, &mut ifr as *mut ifreq_ifaddr as *mut libc::c_void))?;
 
     if ifr.ifr_addr.sa_family != libc::AF_INET as u16 {
         return Err(io::Error::from_raw_os_error(libc::EINVAL));
@@ -176,7 +178,7 @@ impl UdpSocket {
             },
         };
 
-        let fd = cvt(unsafe { libc::socket(family, libc::SOCK_DGRAM | libc::O_CLOEXEC, 0) })?;
+        let fd = cvt!(libc::socket(family, libc::SOCK_DGRAM | libc::O_CLOEXEC, 0))?;
         let ifindex = ifname_to_index(fd, &ifname)?;
 
         Ok(UdpSocket { fd, ifname, addr, ifindex, saddr, slen })
@@ -218,7 +220,7 @@ impl UdpSocket {
         let x = UdpSocket::new(addr)?;
 
         setsockopt(x.fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &ON)?;
-        cvt(unsafe { libc::bind(x.fd, &x.saddr, x.slen) })?;
+        cvt!(libc::bind(x.fd, &x.saddr, x.slen))?;
 
         if x.addr.ip().is_multicast() {
             x.multicast_cmd(MCAST_JOIN_GROUP)?;
@@ -249,29 +251,29 @@ impl UdpSocket {
 
     /// Send data to the remote socket
     pub fn send(&self, data: &[u8]) -> io::Result<usize> {
-        let ret = cvt(unsafe { libc::send(self.fd,
+        let ret = cvt!(libc::send(self.fd,
             data.as_ptr() as *const libc::c_void,
             data.len(),
-            libc::MSG_NOSIGNAL) as i32 })?;
+            libc::MSG_NOSIGNAL))?;
         Ok(ret as usize)
     }
 
     /// Send data to the given address
     pub fn sendto(&self, data: &[u8]) -> io::Result<usize> {
-        let ret = cvt(unsafe { libc::sendto(self.fd,
+        let ret = cvt!(libc::sendto(self.fd,
             data.as_ptr() as *const libc::c_void,
             data.len(),
             libc::MSG_NOSIGNAL,
-            &self.saddr, self.slen) as i32 })?;
+            &self.saddr, self.slen))?;
         Ok(ret as usize)
     }
 
     /// Receive data from remote socket
     pub fn recv(&self, data: &mut [u8]) -> io::Result<usize> {
-        let ret = cvt(unsafe { libc::recv(self.fd,
+        let ret = cvt!(libc::recv(self.fd,
             data.as_mut_ptr() as *mut libc::c_void,
             data.len(),
-            0) as i32 })?;
+            0))?;
         Ok(ret as usize)
     }
 }
