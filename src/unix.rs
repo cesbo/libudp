@@ -1,7 +1,6 @@
 use libc;
 use std::{io, mem, fmt};
-use std::net::{SocketAddr, IpAddr, Ipv4Addr, SocketAddrV4, SocketAddrV6};
-use std::os::unix::io::{RawFd, AsRawFd};
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 
 /// UDP Socket
 ///
@@ -20,6 +19,16 @@ use std::os::unix::io::{RawFd, AsRawFd};
 /// - setsockopt(IP_MULTICAST_IF)
 /// - sendto()
 ///
+pub struct UdpSocket {
+    fd: libc::c_int,
+
+    ifname: String,
+    addr: SocketAddr,
+
+    ifindex: libc::c_int,
+    saddr: libc::sockaddr,
+    slen: libc::socklen_t,
+}
 
 const ON: libc::c_int = 1;
 
@@ -30,11 +39,44 @@ const MCAST_LEAVE_GROUP: libc::c_int = 45;
 
 //
 
+#[inline]
+pub fn cvt(result: i32) -> io::Result<i32> {
+    if result != -1 {
+        Ok(result)
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// setsockopt wrapper
+#[inline]
+fn setsockopt<T>(fd: libc::c_int, level: libc::c_int, name: libc::c_int, value: &T) -> io::Result<()> {
+    let size = mem::size_of_val::<T>(value) as libc::socklen_t;
+    let value = value as *const T as *const libc::c_void;
+    cvt(unsafe { libc::setsockopt(fd, level, name, value, size) })?;
+    Ok(())
+}
+
 #[repr(C)]
 struct ifreq_ifindex {
     ifr_name: [u8; 16],
-    ifr_ifindex: u32,
+    ifr_ifindex: libc::c_int,
     stuff: [u8; 20],
+}
+
+/// Get interface index by the name
+#[inline]
+fn ifname_to_index(fd: libc::c_int, ifname: &str) -> io::Result<libc::c_int> {
+    if ifname.is_empty() {
+        return Ok(0);
+    } else if ifname.len() >= 16 {
+        return Err(io::Error::from_raw_os_error(libc::ENODEV));
+    }
+
+    let mut ifr: ifreq_ifindex = unsafe { mem::zeroed() };
+    ifr.ifr_name[.. ifname.len()].copy_from_slice(ifname.as_bytes());
+    cvt(unsafe { libc::ioctl(fd, SIOCGIFINDEX, &mut ifr as *mut ifreq_ifindex as *mut libc::c_void) })?;
+    Ok(ifr.ifr_ifindex)
 }
 
 #[repr(C)]
@@ -44,83 +86,32 @@ struct ifreq_ifaddr {
     stuff: [u8; 8],
 }
 
-#[repr(C)]
-struct group_req {
-    pub gr_interface: u32,
-    pub gr_group: libc::sockaddr_storage,
-}
-
-pub fn cvt(result: i32) -> io::Result<i32> {
-    if result != -1 {
-        Ok(result)
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-/// Get interface index by the name
-fn ifname_to_index(fd: libc::c_int, ifname: &str) -> io::Result<u32> {
-    if ifname.len() == 0 {
-        return Ok(0);
-    } else if ifname.len() >= 16 {
-        return Err(io::Error::from_raw_os_error(libc::ENODEV));
-    }
-
-    let mut ifr: ifreq_ifindex = unsafe { mem::zeroed() };
-    ifr.ifr_name[.. ifname.len()].copy_from_slice(ifname.as_bytes());
-    cvt(unsafe { libc::ioctl(fd, SIOCGIFINDEX, &mut ifr as *mut ifreq_ifindex as *mut libc::c_void) })?;
-
-    return Ok(ifr.ifr_ifindex);
-}
-
-/// Get interface address by the name
-fn ifname_to_addr(fd: libc::c_int, ifname: &str) -> io::Result<SocketAddr> {
-    if ifname.len() == 0 {
-        return Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0));
-    } else if ifname.len() >= 16 {
-        return Err(io::Error::from_raw_os_error(libc::ENODEV));
+/// Reads IPv4 interface address
+#[inline]
+fn get_ifaddr_v4(fd: libc::c_int, ifname: &str) -> io::Result<libc::in_addr_t> {
+    if ifname.is_empty() || ifname.len() >= 16 {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
     }
 
     let mut ifr: ifreq_ifaddr = unsafe { mem::zeroed() };
     ifr.ifr_name[.. ifname.len()].copy_from_slice(ifname.as_bytes());
     cvt(unsafe { libc::ioctl(fd, libc::SIOCGIFADDR, &mut ifr as *mut ifreq_ifaddr as *mut libc::c_void) })?;
 
-    sockaddr_from(&ifr.ifr_addr)
-}
-
-/// setsockopt wrapper
-#[inline]
-pub fn setsockopt<T>(fd: libc::c_int, level: libc::c_int, name: libc::c_int, value: &T) -> io::Result<()> {
-    let size = mem::size_of_val::<T>(value) as libc::socklen_t;
-    let value = value as *const T as *const libc::c_void;
-    cvt(unsafe { libc::setsockopt(fd, level, name, value, size) })?;
-    Ok(())
-}
-
-pub fn sockaddr_into<'a>(addr: &'a SocketAddr) -> (*const libc::sockaddr, libc::socklen_t) {
-    match addr {
-        SocketAddr::V4(ref a) => (a as *const SocketAddrV4 as *const libc::sockaddr, mem::size_of_val(a) as libc::socklen_t),
-        SocketAddr::V6(ref a) => (a as *const SocketAddrV6 as *const libc::sockaddr, mem::size_of_val(a) as libc::socklen_t),
+    if ifr.ifr_addr.sa_family != libc::AF_INET as u16 {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
     }
+
+    let saddr = unsafe { *(&ifr.ifr_addr as *const libc::sockaddr as *const libc::sockaddr_in) };
+    Ok(saddr.sin_addr.s_addr.to_be())
 }
 
-pub fn sockaddr_from(addr: *const libc::sockaddr) -> io::Result<SocketAddr> {
-    let family: u16 = unsafe { *(addr as *const u16) };
-    match family as i32 {
-        libc::AF_INET => Ok(SocketAddr::V4(unsafe { *(addr as *const SocketAddrV4) })),
-        libc::AF_INET6 => Ok(SocketAddr::V6(unsafe { *(addr as *const SocketAddrV6) })),
-        _ => Err(io::Error::from_raw_os_error(libc::EINVAL)),
-    }
+#[repr(C)]
+struct group_req {
+    pub gr_interface: libc::c_int,
+    pub gr_group: libc::sockaddr_storage,
 }
 
 //
-
-pub struct UdpSocket {
-    ifname: String,
-    addr: SocketAddr,
-    fd: libc::c_int,
-    mreq: Option<group_req>,
-}
 
 impl fmt::Debug for UdpSocket {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -132,38 +123,63 @@ impl fmt::Debug for UdpSocket {
     }
 }
 
+impl Drop for UdpSocket {
+    fn drop(&mut self) {
+        if self.addr.ip().is_multicast() {
+            self.multicast_cmd(MCAST_LEAVE_GROUP).unwrap();
+        }
+
+        if self.fd > 0 {
+            unsafe { libc::close(self.fd) };
+            self.fd = 0;
+        }
+    }
+}
+
 impl UdpSocket {
     fn new(addr: &str) -> io::Result<UdpSocket> {
         let mut ifname = String::new();
-        let addr: SocketAddr = {
-            let mut split = addr.splitn(2, '@');
-            let a1 = split.next().unwrap();
-            let a2 = match split.next() {
-                Some(v) => {
-                    ifname.push_str(a1);
-                    v
-                },
-                None => a1,
-            };
-            match a2.parse() {
-                Ok(v) => v,
-                Err(_) => return Err(io::Error::from_raw_os_error(libc::EINVAL)),
-            }
+        let mut skip = 0;
+
+        if let Some(d) = addr.find('@') {
+            ifname.push_str(&addr[.. d]);
+            skip = d + 1;
+        }
+
+        let addr: SocketAddr = match (&addr[skip ..]).parse() {
+            Ok(v) => v,
+            _ => return Err(io::Error::from_raw_os_error(libc::EINVAL)),
         };
 
-        let family = match addr {
-            SocketAddr::V4(_) => libc::AF_INET,
-            SocketAddr::V6(_) => libc::AF_INET6,
+        let family: libc::c_int;
+        let slen: libc::socklen_t;
+        let mut saddr: libc::sockaddr = unsafe { mem::zeroed() };
+
+        match addr {
+            SocketAddr::V4(ref a) => {
+                family = libc::AF_INET;
+                unsafe {
+                    slen = mem::size_of_val(a) as libc::socklen_t;
+                    libc::memcpy(&mut saddr as *mut libc::sockaddr as *mut libc::c_void,
+                        a as *const SocketAddrV4 as *const libc::c_void,
+                        slen as usize);
+                }
+            },
+            SocketAddr::V6(ref a) => {
+                family = libc::AF_INET6;
+                unsafe {
+                    slen = mem::size_of_val(a) as libc::socklen_t;
+                    libc::memcpy(&mut saddr as *mut libc::sockaddr as *mut libc::c_void,
+                        a as *const SocketAddrV6 as *const libc::c_void,
+                        slen as usize);
+                }
+            },
         };
 
         let fd = cvt(unsafe { libc::socket(family, libc::SOCK_DGRAM | libc::O_CLOEXEC, 0) })?;
+        let ifindex = ifname_to_index(fd, &ifname)?;
 
-        Ok(UdpSocket {
-            ifname: ifname,
-            addr: addr,
-            fd: fd,
-            mreq: None,
-        })
+        Ok(UdpSocket { fd, ifname, addr, ifindex, saddr, slen })
     }
 
     /// Open UDP socket
@@ -178,20 +194,16 @@ impl UdpSocket {
                 SocketAddr::V4(_) => {
                     setsockopt(x.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_LOOP, &ON)?;
                     setsockopt(x.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_TTL, &ttl)?;
-                    if x.ifname.len() > 0 {
-                        let ifaddr = ifname_to_addr(x.fd, &x.ifname)?;
-                        match ifaddr {
-                            SocketAddr::V4(ref v) => setsockopt(x.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_IF, &u32::from(*v.ip()).to_be())?,
-                            _ => unreachable!(),
-                        };
+                    if ! x.ifname.is_empty() {
+                        let addr = get_ifaddr_v4(x.fd, &x.ifname)?;
+                        setsockopt(x.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_IF, &addr)?;
                     }
                 },
                 SocketAddr::V6(_) => {
                     setsockopt(x.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_LOOP, &ON)?;
                     setsockopt(x.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_HOPS, &ttl)?;
-                    let ifindex = ifname_to_index(x.fd, &x.ifname)?;
-                    if ifindex != 0 {
-                        setsockopt(x.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_IF, &ifindex)?;
+                    if x.ifindex != 0 {
+                        setsockopt(x.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_IF, &x.ifindex)?;
                     }
                 },
             };
@@ -203,29 +215,36 @@ impl UdpSocket {
     /// Open and bind UDP socket
     /// For multicast: join to the group
     pub fn bind(addr: &str) -> io::Result<UdpSocket> {
-        let mut x = UdpSocket::new(addr)?;
-        let (saddr, slen) = sockaddr_into(&x.addr);
+        let x = UdpSocket::new(addr)?;
 
         setsockopt(x.fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &ON)?;
-        cvt(unsafe { libc::bind(x.fd, saddr, slen) })?;
+        cvt(unsafe { libc::bind(x.fd, &x.saddr, x.slen) })?;
 
         if x.addr.ip().is_multicast() {
-            let level = match x.addr {
-                SocketAddr::V4(_) => libc::IPPROTO_IP,
-                SocketAddr::V6(_) => libc::IPPROTO_IPV6,
-            };
-            let mut mreq = group_req {
-                gr_interface: ifname_to_index(x.fd, &x.ifname)?,
-                gr_group: unsafe { mem::zeroed() },
-            };
-            unsafe { libc::memcpy(&mut mreq.gr_group as *mut libc::sockaddr_storage as *mut libc::c_void,
-                saddr as *const libc::c_void, slen as usize) };
-            setsockopt(x.fd, level, MCAST_JOIN_GROUP, &mreq)?;
-
-            x.mreq = Some(mreq);
+            x.multicast_cmd(MCAST_JOIN_GROUP)?;
         }
 
         Ok(x)
+    }
+
+    fn multicast_cmd(&self, cmd: libc::c_int) -> io::Result<()> {
+        let level = match self.addr {
+            SocketAddr::V4(_) => libc::IPPROTO_IP,
+            SocketAddr::V6(_) => libc::IPPROTO_IPV6,
+        };
+
+        let mut mreq = group_req {
+            gr_interface: self.ifindex,
+            gr_group: unsafe { mem::zeroed() },
+        };
+
+        unsafe {
+            libc::memcpy(&mut mreq.gr_group as *mut libc::sockaddr_storage as *mut libc::c_void,
+                &self.saddr as *const libc::sockaddr as *const libc::c_void,
+                self.slen as usize)
+        };
+
+        setsockopt(self.fd, level, cmd, &mreq)
     }
 
     /// Send data to the remote socket
@@ -239,12 +258,11 @@ impl UdpSocket {
 
     /// Send data to the given address
     pub fn sendto(&self, data: &[u8]) -> io::Result<usize> {
-        let (saddr, slen) = sockaddr_into(&self.addr);
         let ret = cvt(unsafe { libc::sendto(self.fd,
             data.as_ptr() as *const libc::c_void,
             data.len(),
             libc::MSG_NOSIGNAL,
-            saddr, slen) as i32 })?;
+            &self.saddr, self.slen) as i32 })?;
         Ok(ret as usize)
     }
 
@@ -258,58 +276,12 @@ impl UdpSocket {
     }
 }
 
-impl AsRawFd for UdpSocket {
-    fn as_raw_fd(&self) -> RawFd {
-        self.fd as RawFd
-    }
-}
-
-impl Drop for UdpSocket {
-    fn drop(&mut self) {
-        match self.mreq {
-            Some(ref v) => {
-                let level = match self.addr {
-                    SocketAddr::V4(_) => libc::IPPROTO_IP,
-                    SocketAddr::V6(_) => libc::IPPROTO_IPV6,
-                };
-                setsockopt(self.fd, level, MCAST_LEAVE_GROUP, v).unwrap();
-            },
-            None => (),
-        };
-
-        if self.fd > 0 {
-            unsafe { libc::close(self.fd) };
-            self.fd = 0;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::io::Read;
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-    #[test]
-    fn test_sockaddr_v4() {
-        let s = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 88, 1)), 0);
-        let (saddr, _slen) = sockaddr_into(&s);
-        let mut x = sockaddr_from(saddr).unwrap();
-        assert_eq!(s, x);
-        x.set_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 88, 10)));
-        assert_ne!(s, x);
-    }
-
-    #[test]
-    fn test_sockaddr_v6() {
-        let s = SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0x2a01, 0x04f8, 0x010a, 0x2e4e, 0x0000, 0x0000, 0x0000, 0x0002)), 0);
-        let (saddr, _slen) = sockaddr_into(&s);
-        let mut x = sockaddr_from(saddr).unwrap();
-        assert_eq!(s, x);
-        x.set_ip(IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0x0000, 0x0000, 0x0000, 0x0000, 0x8888)));
-        assert_ne!(s, x);
-    }
+    use std::net::Ipv4Addr;
 
     #[test]
     fn test_ifname_to_index() {
@@ -324,17 +296,18 @@ mod tests {
             let mut file = fs::File::open(format!("{}/{}/ifindex", sys_dir, ifname)).unwrap();
             content.clear();
             file.read_to_string(&mut content).unwrap();
-            let sys_ifindex: u32 = content.trim().parse().unwrap();
+            let sys_ifindex: i32 = content.trim().parse().unwrap();
             assert_eq!(ifindex, sys_ifindex);
         }
         unsafe { libc::close(fd) };
     }
 
     #[test]
-    fn test_ifname_to_addr() {
+    fn test_get_ifaddr_v4() {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
-        let addr = ifname_to_addr(fd, "lo").unwrap();
-        let check = SocketAddr::new(IpAddr::from(Ipv4Addr::new(127, 0, 0, 1)), 0);
+        let addr = get_ifaddr_v4(fd, "lo").unwrap();
+        let addr = Ipv4Addr::from(addr);
+        let check = Ipv4Addr::new(127, 0, 0, 1);
         assert_eq!(addr, check);
         unsafe { libc::close(fd) };
     }
