@@ -25,9 +25,7 @@ pub struct UdpSocket {
     ifname: String,
     addr: SocketAddr,
 
-    ifindex: libc::c_int,
-    saddr: libc::sockaddr,
-    slen: libc::socklen_t,
+    mreq: group_req,
 }
 
 const ON: libc::c_int = 1;
@@ -68,7 +66,7 @@ struct ifreq_ifindex {
 
 /// Get interface index by the name
 #[inline]
-fn ifname_to_index(fd: libc::c_int, ifname: &str) -> io::Result<libc::c_int> {
+fn get_ifindex(fd: libc::c_int, ifname: &str) -> io::Result<libc::c_int> {
     if ifname.is_empty() {
         return Ok(0);
     } else if ifname.len() >= 16 {
@@ -104,13 +102,21 @@ fn get_ifaddr_v4(fd: libc::c_int, ifname: &str) -> io::Result<libc::in_addr_t> {
     }
 
     let saddr = unsafe { *(&ifr.ifr_addr as *const libc::sockaddr as *const libc::sockaddr_in) };
-    Ok(saddr.sin_addr.s_addr.to_be())
+    Ok(saddr.sin_addr.s_addr)
 }
 
 #[repr(C)]
 struct group_req {
     pub gr_interface: libc::c_int,
     pub gr_group: libc::sockaddr_storage,
+}
+
+#[inline]
+pub fn get_sockaddr<'a>(addr: &'a SocketAddr) -> (*const libc::sockaddr, libc::socklen_t) {
+    match addr {
+        SocketAddr::V4(ref a) => (a as *const SocketAddrV4 as *const libc::sockaddr, mem::size_of_val(a) as libc::socklen_t),
+        SocketAddr::V6(ref a) => (a as *const SocketAddrV6 as *const libc::sockaddr, mem::size_of_val(a) as libc::socklen_t),
+    }
 }
 
 //
@@ -127,14 +133,13 @@ impl fmt::Debug for UdpSocket {
 
 impl Drop for UdpSocket {
     fn drop(&mut self) {
-        if self.addr.ip().is_multicast() {
-            self.multicast_cmd(MCAST_LEAVE_GROUP).unwrap();
-        }
+        match self.mreq.gr_group.ss_family as i32 {
+            libc::AF_INET => setsockopt(self.fd, libc::IPPROTO_IP, MCAST_LEAVE_GROUP, &self.mreq).unwrap(),
+            libc::AF_INET6 => setsockopt(self.fd, libc::IPPROTO_IPV6, MCAST_LEAVE_GROUP, &self.mreq).unwrap(),
+            _ => {},
+        };
 
-        if self.fd > 0 {
-            unsafe { libc::close(self.fd) };
-            self.fd = 0;
-        }
+        unsafe { libc::close(self.fd) };
     }
 }
 
@@ -153,38 +158,18 @@ impl UdpSocket {
             _ => return Err(io::Error::from_raw_os_error(libc::EINVAL)),
         };
 
-        let family: libc::c_int;
-        let slen: libc::socklen_t;
-        let mut saddr: libc::sockaddr = unsafe { mem::zeroed() };
-
-        match addr {
-            SocketAddr::V4(ref a) => {
-                family = libc::AF_INET;
-                unsafe {
-                    slen = mem::size_of_val(a) as libc::socklen_t;
-                    libc::memcpy(&mut saddr as *mut libc::sockaddr as *mut libc::c_void,
-                        a as *const SocketAddrV4 as *const libc::c_void,
-                        slen as usize);
-                }
-            },
-            SocketAddr::V6(ref a) => {
-                family = libc::AF_INET6;
-                unsafe {
-                    slen = mem::size_of_val(a) as libc::socklen_t;
-                    libc::memcpy(&mut saddr as *mut libc::sockaddr as *mut libc::c_void,
-                        a as *const SocketAddrV6 as *const libc::c_void,
-                        slen as usize);
-                }
-            },
+        let family = match addr {
+            SocketAddr::V4(_) => libc::AF_INET,
+            SocketAddr::V6(_) => libc::AF_INET6,
         };
 
         let fd = cvt!(libc::socket(family, libc::SOCK_DGRAM | libc::O_CLOEXEC, 0))?;
-        let ifindex = ifname_to_index(fd, &ifname)?;
+        let mreq: group_req = unsafe { mem::zeroed() };
 
-        Ok(UdpSocket { fd, ifname, addr, ifindex, saddr, slen })
+        Ok(UdpSocket { fd, ifname, addr, mreq })
     }
 
-    /// Open UDP socket
+    /// Open UDP socket for sending packets
     /// For multicast: turn on loop, set ttl to 8, and specify interface
     pub fn open(addr: &str) -> io::Result<UdpSocket> {
         let x = UdpSocket::new(addr)?;
@@ -204,8 +189,9 @@ impl UdpSocket {
                 SocketAddr::V6(_) => {
                     setsockopt(x.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_LOOP, &ON)?;
                     setsockopt(x.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_HOPS, &ttl)?;
-                    if x.ifindex != 0 {
-                        setsockopt(x.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_IF, &x.ifindex)?;
+                    if ! x.ifname.is_empty() {
+                        let ifindex = get_ifindex(x.fd, &x.ifname)?;
+                        setsockopt(x.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_IF, &ifindex)?;
                     }
                 },
             };
@@ -214,39 +200,33 @@ impl UdpSocket {
         Ok(x)
     }
 
-    /// Open and bind UDP socket
+    /// Open and bind UDP socket for receiving packets
     /// For multicast: join to the group
     pub fn bind(addr: &str) -> io::Result<UdpSocket> {
-        let x = UdpSocket::new(addr)?;
+        let mut x = UdpSocket::new(addr)?;
+
+        let (saddr, slen) = get_sockaddr(&x.addr);
 
         setsockopt(x.fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &ON)?;
-        cvt!(libc::bind(x.fd, &x.saddr, x.slen))?;
+        cvt!(libc::bind(x.fd, saddr, slen))?;
 
         if x.addr.ip().is_multicast() {
-            x.multicast_cmd(MCAST_JOIN_GROUP)?;
+            let level = match x.addr {
+                SocketAddr::V4(_) => libc::IPPROTO_IP,
+                SocketAddr::V6(_) => libc::IPPROTO_IPV6,
+            };
+
+            x.mreq.gr_interface = get_ifindex(x.fd, &x.ifname)?;
+            unsafe {
+                libc::memcpy(&mut x.mreq.gr_group as *mut libc::sockaddr_storage as *mut libc::c_void,
+                    saddr as *const libc::c_void,
+                    slen as usize)
+            };
+
+            setsockopt(x.fd, level, MCAST_JOIN_GROUP, &x.mreq)?;
         }
 
         Ok(x)
-    }
-
-    fn multicast_cmd(&self, cmd: libc::c_int) -> io::Result<()> {
-        let level = match self.addr {
-            SocketAddr::V4(_) => libc::IPPROTO_IP,
-            SocketAddr::V6(_) => libc::IPPROTO_IPV6,
-        };
-
-        let mut mreq = group_req {
-            gr_interface: self.ifindex,
-            gr_group: unsafe { mem::zeroed() },
-        };
-
-        unsafe {
-            libc::memcpy(&mut mreq.gr_group as *mut libc::sockaddr_storage as *mut libc::c_void,
-                &self.saddr as *const libc::sockaddr as *const libc::c_void,
-                self.slen as usize)
-        };
-
-        setsockopt(self.fd, level, cmd, &mreq)
     }
 
     /// Send data to the remote socket
@@ -260,11 +240,12 @@ impl UdpSocket {
 
     /// Send data to the given address
     pub fn sendto(&self, data: &[u8]) -> io::Result<usize> {
+        let (saddr, slen) = get_sockaddr(&self.addr);
         let ret = cvt!(libc::sendto(self.fd,
             data.as_ptr() as *const libc::c_void,
             data.len(),
             libc::MSG_NOSIGNAL,
-            &self.saddr, self.slen))?;
+            saddr, slen))?;
         Ok(ret as usize)
     }
 
@@ -286,14 +267,14 @@ mod tests {
     use std::net::Ipv4Addr;
 
     #[test]
-    fn test_ifname_to_index() {
+    fn test_get_ifindex() {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
         let sys_dir = "/sys/class/net";
         let dir_list = fs::read_dir(sys_dir).unwrap();
         let mut content = String::new();
         for i in dir_list {
             let ifname = i.unwrap().file_name().to_str().unwrap().to_string();
-            let ifindex = ifname_to_index(fd, ifname.as_str()).unwrap();
+            let ifindex = get_ifindex(fd, ifname.as_str()).unwrap();
 
             let mut file = fs::File::open(format!("{}/{}/ifindex", sys_dir, ifname)).unwrap();
             content.clear();
@@ -308,22 +289,15 @@ mod tests {
     fn test_get_ifaddr_v4() {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
         let addr = get_ifaddr_v4(fd, "lo").unwrap();
-        let addr = Ipv4Addr::from(addr);
         let check = Ipv4Addr::new(127, 0, 0, 1);
-        assert_eq!(addr, check);
+        assert_eq!(addr, u32::from(check).to_be());
         unsafe { libc::close(fd) };
     }
 
     #[test]
-    fn test_udpsocket_multicast() {
-        let s = UdpSocket::bind("lo@239.255.1.1:1234").unwrap();
-        mem::drop(s);
-    }
-
-    #[test]
     fn test_send_receive() {
-        let ssock = UdpSocket::open("lo@127.0.0.1:10000").unwrap();
-        let rsock = UdpSocket::bind("lo@127.0.0.1:10000").unwrap();
+        let ssock = UdpSocket::open("eth0@239.255.1.1:10000").unwrap();
+        let rsock = UdpSocket::bind("eth0@239.255.1.1:10000").unwrap();
         let sdata = String::from("Hello, world!");
         let sbytes = ssock.sendto(sdata.as_bytes()).unwrap();
         let mut rdata = [0; 1460];
