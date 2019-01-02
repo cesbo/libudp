@@ -296,8 +296,8 @@ mod tests {
 
     #[test]
     fn test_send_receive() {
-        let ssock = UdpSocket::open("eth0@239.255.1.1:10000").unwrap();
-        let rsock = UdpSocket::bind("eth0@239.255.1.1:10000").unwrap();
+        let ssock = UdpSocket::open("lo@239.255.1.1:10000").unwrap();
+        let rsock = UdpSocket::bind("lo@239.255.1.1:10000").unwrap();
         let sdata = String::from("Hello, world!");
         let sbytes = ssock.sendto(sdata.as_bytes()).unwrap();
         let mut rdata = [0; 1460];
