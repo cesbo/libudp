@@ -2,36 +2,15 @@ use libc;
 use std::{io, mem, fmt};
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 
-/// UDP Socket
-///
-/// # IBM Knowledge Center. Multicast:
-///
-/// Receiving:
-/// - socket()
-/// - setsockopt(SO_REUSEADDR)
-/// - bind()
-/// - setsockopt(IP_ADD_MEMBERSHIP)
-/// - read()
-///
-/// Sending:
-/// - socket()
-/// - setsockopt(IP_MULTICAST_LOOPBACK)
-/// - setsockopt(IP_MULTICAST_IF)
-/// - sendto()
-///
 pub struct UdpSocket {
     fd: libc::c_int,
-
     ifname: String,
     addr: SocketAddr,
-
     mreq: group_req,
 }
 
 const ON: libc::c_int = 1;
-
 const SIOCGIFINDEX: libc::c_ulong = 0x8933;
-
 const MCAST_JOIN_GROUP: libc::c_int = 42;
 const MCAST_LEAVE_GROUP: libc::c_int = 45;
 
