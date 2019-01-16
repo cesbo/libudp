@@ -112,13 +112,7 @@ impl fmt::Debug for UdpSocket {
 
 impl Drop for UdpSocket {
     fn drop(&mut self) {
-        match self.mreq.gr_group.ss_family as i32 {
-            libc::AF_INET => setsockopt(self.fd, libc::IPPROTO_IP, MCAST_LEAVE_GROUP, &self.mreq).unwrap(),
-            libc::AF_INET6 => setsockopt(self.fd, libc::IPPROTO_IPV6, MCAST_LEAVE_GROUP, &self.mreq).unwrap(),
-            _ => {},
-        };
-
-        unsafe { libc::close(self.fd) };
+        self.close();
     }
 }
 
@@ -134,7 +128,24 @@ impl Default for UdpSocket {
 }
 
 impl UdpSocket {
+    fn close(&mut self) {
+        match self.mreq.gr_group.ss_family as i32 {
+            libc::AF_INET => setsockopt(self.fd, libc::IPPROTO_IP, MCAST_LEAVE_GROUP, &self.mreq).unwrap(),
+            libc::AF_INET6 => setsockopt(self.fd, libc::IPPROTO_IPV6, MCAST_LEAVE_GROUP, &self.mreq).unwrap(),
+            _ => {},
+        };
+        self.mreq.gr_interface = 0;
+        self.mreq.gr_group.ss_family = libc::AF_UNSPEC;
+
+        if self.fd > 0 {
+            unsafe { libc::close(self.fd) };
+            self.fd = 0;
+        }
+    }
+
     fn init(&mut self, addr: &str) -> io::Result<()> {
+        self.close();
+
         let mut skip = 0;
 
         if let Some(d) = addr.find('@') {
