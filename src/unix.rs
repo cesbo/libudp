@@ -137,7 +137,7 @@ impl UdpSocket {
         self.mreq.gr_interface = 0;
         self.mreq.gr_group.ss_family = libc::AF_UNSPEC as u16;
 
-        if self.fd > 0 {
+        if self.is_open() {
             unsafe { libc::close(self.fd) };
             self.fd = 0;
         }
@@ -166,6 +166,11 @@ impl UdpSocket {
         self.fd = cvt!(libc::socket(family, libc::SOCK_DGRAM | libc::O_CLOEXEC, 0))?;
 
         Ok(())
+    }
+
+    #[inline]
+    pub fn is_open(&self) -> bool {
+        self.fd > 0
     }
 
     /// Open UDP socket for sending packets
