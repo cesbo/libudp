@@ -135,7 +135,7 @@ impl UdpSocket {
             _ => {},
         };
         self.mreq.gr_interface = 0;
-        self.mreq.gr_group.ss_family = libc::AF_UNSPEC;
+        self.mreq.gr_group.ss_family = libc::AF_UNSPEC as u16;
 
         if self.fd > 0 {
             unsafe { libc::close(self.fd) };
