@@ -1,6 +1,6 @@
 use libc;
 use std::{io, mem, fmt};
-use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6, Ipv4Addr};
 
 pub struct UdpSocket {
     fd: libc::c_int,
@@ -122,90 +122,99 @@ impl Drop for UdpSocket {
     }
 }
 
+impl Default for UdpSocket {
+    fn default() -> Self {
+        UdpSocket {
+            fd: 0,
+            ifname: String::new(),
+            addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
+            mreq: unsafe { mem::zeroed() },
+        }
+    }
+}
+
 impl UdpSocket {
-    fn new(addr: &str) -> io::Result<UdpSocket> {
-        let mut ifname = String::new();
+    fn init(&mut self, addr: &str) -> io::Result<()> {
         let mut skip = 0;
 
         if let Some(d) = addr.find('@') {
-            ifname.push_str(&addr[.. d]);
+            self.ifname.push_str(&addr[.. d]);
             skip = d + 1;
         }
 
-        let addr: SocketAddr = match (&addr[skip ..]).parse() {
+        self.addr = match (&addr[skip ..]).parse() {
             Ok(v) => v,
             _ => return Err(io::Error::from_raw_os_error(libc::EINVAL)),
         };
 
-        let family = match addr {
+        let family = match self.addr {
             SocketAddr::V4(_) => libc::AF_INET,
             SocketAddr::V6(_) => libc::AF_INET6,
         };
 
-        let fd = cvt!(libc::socket(family, libc::SOCK_DGRAM | libc::O_CLOEXEC, 0))?;
-        let mreq: group_req = unsafe { mem::zeroed() };
+        self.fd = cvt!(libc::socket(family, libc::SOCK_DGRAM | libc::O_CLOEXEC, 0))?;
 
-        Ok(UdpSocket { fd, ifname, addr, mreq })
+        Ok(())
     }
 
     /// Open UDP socket for sending packets
     /// For multicast: turn on loop, set ttl to 8, and specify interface
-    pub fn open(addr: &str) -> io::Result<UdpSocket> {
-        let x = UdpSocket::new(addr)?;
+    pub fn open(&mut self, addr: &str) -> io::Result<()> {
+        self.init(addr)?;
 
-        if x.addr.ip().is_multicast() {
+        if self.addr.ip().is_multicast() {
             let ttl: libc::c_int = 8;
 
-            match x.addr {
+            match self.addr {
                 SocketAddr::V4(_) => {
-                    setsockopt(x.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_LOOP, &ON)?;
-                    setsockopt(x.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_TTL, &ttl)?;
-                    if ! x.ifname.is_empty() {
-                        let addr = get_ifaddr_v4(x.fd, &x.ifname)?;
-                        setsockopt(x.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_IF, &addr)?;
+                    setsockopt(self.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_LOOP, &ON)?;
+                    setsockopt(self.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_TTL, &ttl)?;
+                    if ! self.ifname.is_empty() {
+                        let addr = get_ifaddr_v4(self.fd, &self.ifname)?;
+                        setsockopt(self.fd, libc::IPPROTO_IP, libc::IP_MULTICAST_IF, &addr)?;
                     }
                 },
                 SocketAddr::V6(_) => {
-                    setsockopt(x.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_LOOP, &ON)?;
-                    setsockopt(x.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_HOPS, &ttl)?;
-                    if ! x.ifname.is_empty() {
-                        let ifindex = get_ifindex(x.fd, &x.ifname)?;
-                        setsockopt(x.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_IF, &ifindex)?;
+                    setsockopt(self.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_LOOP, &ON)?;
+                    setsockopt(self.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_HOPS, &ttl)?;
+                    if ! self.ifname.is_empty() {
+                        let ifindex = get_ifindex(self.fd, &self.ifname)?;
+                        setsockopt(self.fd, libc::IPPROTO_IPV6, libc::IPV6_MULTICAST_IF, &ifindex)?;
                     }
                 },
             };
         }
 
-        Ok(x)
+        Ok(())
     }
 
     /// Open and bind UDP socket for receiving packets
     /// For multicast: join to the group
-    pub fn bind(addr: &str) -> io::Result<UdpSocket> {
-        let mut x = UdpSocket::new(addr)?;
+    pub fn bind(&mut self, addr: &str) -> io::Result<()> {
+        self.init(addr)?;
 
-        let (saddr, slen) = get_sockaddr(&x.addr);
+        let (saddr, slen) = get_sockaddr(&self.addr);
 
-        setsockopt(x.fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &ON)?;
-        cvt!(libc::bind(x.fd, saddr, slen))?;
+        setsockopt(self.fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &ON)?;
+        cvt!(libc::bind(self.fd, saddr, slen))?;
 
-        if x.addr.ip().is_multicast() {
-            let level = match x.addr {
+        if self.addr.ip().is_multicast() {
+            let level = match self.addr {
                 SocketAddr::V4(_) => libc::IPPROTO_IP,
                 SocketAddr::V6(_) => libc::IPPROTO_IPV6,
             };
 
-            x.mreq.gr_interface = get_ifindex(x.fd, &x.ifname)?;
+            self.mreq.gr_interface = get_ifindex(self.fd, &self.ifname)?;
             unsafe {
-                libc::memcpy(&mut x.mreq.gr_group as *mut libc::sockaddr_storage as *mut libc::c_void,
+                libc::memcpy(&mut self.mreq.gr_group as *mut libc::sockaddr_storage as *mut libc::c_void,
                     saddr as *const libc::c_void,
                     slen as usize)
             };
 
-            setsockopt(x.fd, level, MCAST_JOIN_GROUP, &x.mreq)?;
+            setsockopt(self.fd, level, MCAST_JOIN_GROUP, &self.mreq)?;
         }
 
-        Ok(x)
+        Ok(())
     }
 
     /// Send data to the remote socket
@@ -275,8 +284,10 @@ mod tests {
 
     #[test]
     fn test_send_receive() {
-        let ssock = UdpSocket::open("lo@239.255.1.1:10000").unwrap();
-        let rsock = UdpSocket::bind("lo@239.255.1.1:10000").unwrap();
+        let mut ssock = UdpSocket::default();
+        ssock.open("lo@239.255.1.1:10000").unwrap();
+        let mut rsock = UdpSocket::default();
+        rsock.bind("lo@239.255.1.1:10000").unwrap();
         let sdata = String::from("Hello, world!");
         let sbytes = ssock.sendto(sdata.as_bytes()).unwrap();
         let mut rdata = [0; 1460];
