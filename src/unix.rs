@@ -10,6 +10,7 @@ pub struct UdpSocket {
 }
 
 const ON: libc::c_int = 1;
+const SIOCGIFADDR: libc::c_ulong = 0x8915;
 const SIOCGIFINDEX: libc::c_ulong = 0x8933;
 const MCAST_JOIN_GROUP: libc::c_int = 42;
 const MCAST_LEAVE_GROUP: libc::c_int = 45;
@@ -74,7 +75,7 @@ fn get_ifaddr_v4(fd: libc::c_int, ifname: &str) -> io::Result<libc::in_addr_t> {
 
     let mut ifr: ifreq_ifaddr = unsafe { mem::zeroed() };
     ifr.ifr_name[.. ifname.len()].copy_from_slice(ifname.as_bytes());
-    cvt!(libc::ioctl(fd, libc::SIOCGIFADDR, &mut ifr as *mut ifreq_ifaddr as *mut libc::c_void))?;
+    cvt!(libc::ioctl(fd, SIOCGIFADDR, &mut ifr as *mut ifreq_ifaddr as *mut libc::c_void))?;
 
     if ifr.ifr_addr.sa_family != libc::AF_INET as u16 {
         return Err(io::Error::from_raw_os_error(libc::EINVAL));
