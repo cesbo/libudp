@@ -1,6 +1,19 @@
 use libc;
-use std::{io, mem, fmt};
-use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::mem;
+use std::fmt::{
+    self,
+    Debug,
+    Formatter,
+};
+use std::io::{
+    self,
+    Read,
+};
+use std::net::{
+    SocketAddr,
+    SocketAddrV4,
+    SocketAddrV6,
+};
 
 pub struct UdpSocket {
     fd: libc::c_int,
@@ -9,13 +22,13 @@ pub struct UdpSocket {
     mreq: group_req,
 }
 
+
 const ON: libc::c_int = 1;
 const SIOCGIFADDR: libc::c_ulong = 0x8915;
 const SIOCGIFINDEX: libc::c_ulong = 0x8933;
 const MCAST_JOIN_GROUP: libc::c_int = 42;
 const MCAST_LEAVE_GROUP: libc::c_int = 45;
 
-//
 
 macro_rules! cvt {
     ($fn: expr) => ({
@@ -28,6 +41,7 @@ macro_rules! cvt {
     })
 }
 
+
 /// setsockopt wrapper
 #[inline]
 fn setsockopt<T>(fd: libc::c_int, level: libc::c_int, name: libc::c_int, value: &T) -> io::Result<()> {
@@ -37,12 +51,14 @@ fn setsockopt<T>(fd: libc::c_int, level: libc::c_int, name: libc::c_int, value: 
     Ok(())
 }
 
+
 #[repr(C)]
 struct ifreq_ifindex {
     ifr_name: [u8; 16],
     ifr_ifindex: libc::c_int,
     stuff: [u8; 20],
 }
+
 
 /// Get interface index by the name
 #[inline]
@@ -59,12 +75,14 @@ fn get_ifindex(fd: libc::c_int, ifname: &str) -> io::Result<libc::c_int> {
     Ok(ifr.ifr_ifindex)
 }
 
+
 #[repr(C)]
 struct ifreq_ifaddr {
     ifr_name: [u8; 16],
     ifr_addr: libc::sockaddr,
     stuff: [u8; 8],
 }
+
 
 /// Reads IPv4 interface address
 #[inline]
@@ -85,11 +103,13 @@ fn get_ifaddr_v4(fd: libc::c_int, ifname: &str) -> io::Result<libc::in_addr_t> {
     Ok(saddr.sin_addr.s_addr)
 }
 
+
 #[repr(C)]
 struct group_req {
     pub gr_interface: libc::c_int,
     pub gr_group: libc::sockaddr_storage,
 }
+
 
 #[inline]
 pub fn get_sockaddr<'a>(addr: &'a SocketAddr) -> (*const libc::sockaddr, libc::socklen_t) {
@@ -99,10 +119,9 @@ pub fn get_sockaddr<'a>(addr: &'a SocketAddr) -> (*const libc::sockaddr, libc::s
     }
 }
 
-//
 
-impl fmt::Debug for UdpSocket {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl Debug for UdpSocket {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("UdpSocket")
             .field("fd", &self.fd)
             .field("ifname", &self.ifname)
@@ -110,6 +129,7 @@ impl fmt::Debug for UdpSocket {
             .finish()
     }
 }
+
 
 impl Drop for UdpSocket {
     fn drop(&mut self) {
@@ -122,6 +142,14 @@ impl Drop for UdpSocket {
         unsafe { libc::close(self.fd) };
     }
 }
+
+
+impl Read for UdpSocket {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.recv(buf)
+    }
+}
+
 
 impl UdpSocket {
     fn new(addr: &str) -> io::Result<UdpSocket> {
@@ -238,6 +266,7 @@ impl UdpSocket {
         Ok(ret as usize)
     }
 }
+
 
 #[cfg(test)]
 mod tests {
