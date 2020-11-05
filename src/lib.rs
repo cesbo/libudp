@@ -38,10 +38,6 @@ pub struct UdpSocket {
 
 
 const ON: libc::c_int = 1;
-#[cfg(target_os = "linux")] const SIOCGIFADDR: libc::c_ulong = 0x8915;
-#[cfg(target_os = "macos")] const SIOCGIFADDR: libc::c_ulong = 0xC020_6921;
-const MCAST_JOIN_GROUP: libc::c_int = 42;
-const MCAST_LEAVE_GROUP: libc::c_int = 45;
 
 
 macro_rules! cvt {
@@ -89,7 +85,7 @@ fn get_ifaddr_v4(fd: libc::c_int, ifname: &str) -> io::Result<libc::in_addr_t> {
 
     let mut ifr: ifreq_ifaddr = unsafe { mem::zeroed() };
     ifr.ifr_name[.. ifname.len()].copy_from_slice(ifname.as_bytes());
-    cvt!(libc::ioctl(fd, SIOCGIFADDR, &mut ifr as *mut ifreq_ifaddr as *mut libc::c_void))?;
+    cvt!(libc::ioctl(fd, libc::SIOCGIFADDR, &mut ifr as *mut ifreq_ifaddr as *mut libc::c_void))?;
 
     if i32::from(ifr.ifr_addr.sa_family) != libc::AF_INET {
         return Err(io::Error::from_raw_os_error(libc::EINVAL));
@@ -130,8 +126,8 @@ impl fmt::Debug for UdpSocket {
 impl Drop for UdpSocket {
     fn drop(&mut self) {
         match self.mreq.gr_group.ss_family as i32 {
-            libc::AF_INET => setsockopt(self.fd, libc::IPPROTO_IP, MCAST_LEAVE_GROUP, &self.mreq).unwrap(),
-            libc::AF_INET6 => setsockopt(self.fd, libc::IPPROTO_IPV6, MCAST_LEAVE_GROUP, &self.mreq).unwrap(),
+            libc::AF_INET => setsockopt(self.fd, libc::IPPROTO_IP, libc::MCAST_LEAVE_GROUP, &self.mreq).unwrap(),
+            libc::AF_INET6 => setsockopt(self.fd, libc::IPPROTO_IPV6, libc::MCAST_LEAVE_GROUP, &self.mreq).unwrap(),
             _ => {},
         };
 
@@ -220,7 +216,7 @@ impl UdpSocket {
                     slen as usize)
             };
 
-            setsockopt(x.fd, level, MCAST_JOIN_GROUP, &x.mreq)?;
+            setsockopt(x.fd, level, libc::MCAST_JOIN_GROUP, &x.mreq)?;
         }
 
         Ok(x)
