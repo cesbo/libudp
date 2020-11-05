@@ -29,6 +29,13 @@ use std::{
 use libc;
 
 
+#[cfg(target_env = "gnu")]
+pub type IoctlInt = libc::c_ulong;
+
+#[cfg(target_env = "musl")]
+pub type IoctlInt = libc::c_int;
+
+
 pub struct UdpSocket {
     fd: libc::c_int,
     ifname: String,
@@ -85,7 +92,7 @@ fn get_ifaddr_v4(fd: libc::c_int, ifname: &str) -> io::Result<libc::in_addr_t> {
 
     let mut ifr: ifreq_ifaddr = unsafe { mem::zeroed() };
     ifr.ifr_name[.. ifname.len()].copy_from_slice(ifname.as_bytes());
-    cvt!(libc::ioctl(fd, libc::SIOCGIFADDR, &mut ifr as *mut ifreq_ifaddr as *mut libc::c_void))?;
+    cvt!(libc::ioctl(fd, libc::SIOCGIFADDR as IoctlInt, &mut ifr as *mut ifreq_ifaddr as *mut libc::c_void))?;
 
     if i32::from(ifr.ifr_addr.sa_family) != libc::AF_INET {
         return Err(io::Error::from_raw_os_error(libc::EINVAL));
