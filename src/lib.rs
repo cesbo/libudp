@@ -171,7 +171,7 @@ impl UdpSocket {
             SocketAddr::V4(a) => {
                 let sockaddr_ptr = &mut sockaddr as *mut _ as *mut libc::sockaddr_in;
                 unsafe {
-                    (*sockaddr_ptr).sin_family = libc::AF_INET as u8;
+                    (*sockaddr_ptr).sin_family = libc::AF_INET as u16;
                     (*sockaddr_ptr).sin_port = a.port().to_be();
                     (*sockaddr_ptr).sin_addr = libc::in_addr { s_addr: u32::from(*a.ip()).to_be() };
                 }
@@ -181,7 +181,7 @@ impl UdpSocket {
             SocketAddr::V6(a) => {
                 let sockaddr_ptr = &mut sockaddr as *mut _ as *mut libc::sockaddr_in6;
                 unsafe {
-                    (*sockaddr_ptr).sin6_family = libc::AF_INET6 as u8;
+                    (*sockaddr_ptr).sin6_family = libc::AF_INET6 as u16;
                     (*sockaddr_ptr).sin6_port = a.port().to_be();
                     (*sockaddr_ptr).sin6_addr.s6_addr.copy_from_slice(&a.ip().octets())
                 }
