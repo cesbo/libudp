@@ -164,8 +164,8 @@ impl UdpSocket {
         };
 
         let mut sockaddr: libc::sockaddr = unsafe { mem::zeroed() };
-        let mut socklen: libc::socklen_t = 0;
-        let mut is_multicast: bool = false;
+        let mut socklen: libc::socklen_t;
+        let mut is_multicast: bool;
 
         match addr {
             SocketAddr::V4(a) => {
