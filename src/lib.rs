@@ -19,10 +19,9 @@ use std::{
     mem,
     fmt,
     io,
+    ffi::CString,
     net::SocketAddr,
 };
-
-use libc;
 
 
 #[cfg(target_env = "gnu")]
@@ -71,8 +70,13 @@ fn setsockopt<T>(fd: libc::c_int, level: libc::c_int, name: libc::c_int, value: 
 
 #[inline]
 fn get_ifindex<R: AsRef<str>>(ifname: R) -> libc::c_uint {
-    let ifname = ifname.as_ref().as_ptr() as *const i8;
-    unsafe { libc::if_nametoindex(ifname) }
+    // if_nametoindex() expects a NUL-terminated C string. A Rust &str is not
+    // NUL-terminated, so build a CString first. On error (e.g. interior NUL or
+    // empty name) return 0, which the kernel treats as "unspecified interface".
+    match CString::new(ifname.as_ref()) {
+        Ok(name) => unsafe { libc::if_nametoindex(name.as_ptr()) },
+        Err(_) => 0,
+    }
 }
 
 
@@ -158,7 +162,7 @@ impl UdpSocket {
             skip = d + 1;
         }
 
-        let addr: SocketAddr = match (&addr[skip ..]).parse() {
+        let addr: SocketAddr = match addr[skip ..].parse() {
             Ok(v) => v,
             _ => return Err(io::Error::from_raw_os_error(libc::EINVAL)),
         };
@@ -246,7 +250,7 @@ impl UdpSocket {
         let mut x = UdpSocket::new(addr)?;
 
         setsockopt(x.fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &ON)?;
-        cvt!(libc::bind(x.fd, &x.sockaddr as *const _ as *const libc::sockaddr, x.socklen))?;
+        cvt!(libc::bind(x.fd, &x.sockaddr as *const _, x.socklen))?;
 
         if x.is_multicast {
             let level = match x.sockaddr.sa_family as libc::c_int {
@@ -284,7 +288,7 @@ impl UdpSocket {
             data.as_ptr() as *const libc::c_void,
             data.len(),
             0,
-            &self.sockaddr as *const _ as *const libc::sockaddr,
+            &self.sockaddr as *const _,
             self.socklen))?;
         Ok(ret as usize)
     }
