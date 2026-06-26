@@ -1,8 +1,9 @@
 [package]
 name = "udp"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Andrey Dyldin <and@cesbo.com>"]
 edition = "2021"
 
 [dependencies]
+socket2 = { version = "0.6", features = ["all"] }
 libc = "0.2"
