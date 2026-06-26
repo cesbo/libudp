@@ -74,6 +74,16 @@ impl RecvSocket {
         self.inner.set_read_timeout(dur)
     }
 
+    /// Toggle non-blocking mode (`O_NONBLOCK`).
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.inner.set_nonblocking(nonblocking)
+    }
+
+    /// Read `O_NONBLOCK`.
+    pub fn nonblocking(&self) -> io::Result<bool> {
+        self.inner.nonblocking()
+    }
+
     /// Bind to a device by name (`SO_BINDTODEVICE`).
     pub fn bind_device(&self, name: &str) -> io::Result<()> {
         match self.inner.bind_device(Some(name.as_bytes())) {
@@ -178,6 +188,34 @@ mod tests {
         let mut buf = [0u8; 64];
         let n = std_recv.recv(&mut buf).expect("recv");
         assert_eq!(&buf[.. n], payload);
+    }
+
+    #[test]
+    fn set_nonblocking_toggles() {
+        let sock = RecvSocket::new().expect("new");
+        sock.bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .expect("bind");
+
+        // Default is blocking.
+        assert!(!sock.nonblocking().expect("read default"));
+
+        // Enable: a read with no data pending must not block.
+        sock.set_nonblocking(true).expect("enable");
+        assert!(sock.nonblocking().expect("read enabled"));
+        let std_recv: UdpSocket = RecvSocket::new()
+            .and_then(|s| {
+                s.bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+                s.set_nonblocking(true)?;
+                Ok(s.into_std())
+            })
+            .expect("nonblocking recv");
+        let mut buf = [0u8; 64];
+        let err = std_recv.recv(&mut buf).expect_err("would block");
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+
+        // Disable: back to blocking.
+        sock.set_nonblocking(false).expect("disable");
+        assert!(!sock.nonblocking().expect("read disabled"));
     }
 
     #[test]
