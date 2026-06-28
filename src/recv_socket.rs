@@ -39,8 +39,7 @@ pub struct RecvSocket {
 
 impl RecvSocket {
     /// Create an unbound blocking AF_INET UDP socket (`SOCK_DGRAM` /
-    /// `IPPROTO_UDP`). Mirrors `asc_socket_open_udp4`; call [`bind`](Self::bind)
-    /// next.
+    /// `IPPROTO_UDP`).
     pub fn new() -> io::Result<Self> {
         let inner = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
         Ok(Self { inner })
@@ -139,8 +138,7 @@ impl RecvSocket {
         m.renew(self.as_fd())
     }
 
-    /// Convert into a [`std::net::UdpSocket`] for a future tokio phase
-    /// (`tokio::net::UdpSocket::from_std`).
+    /// Convert into a [`std::net::UdpSocket`].
     pub fn into_std(self) -> std::net::UdpSocket {
         std::net::UdpSocket::from(self.inner)
     }
