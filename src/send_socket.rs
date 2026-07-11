@@ -50,8 +50,8 @@ impl SendSocket {
         self.inner.bind(&SockAddr::from(addr))
     }
 
-    /// Set the default peer so [`send`](Self::send) can be used (the
-    /// connected-datagram path, mirroring a fixed-destination flow).
+    /// Set the default peer (the connected-datagram path, mirroring a
+    /// fixed-destination flow; the caller sends via `into_std()` or the fd).
     pub fn connect(&self, addr: SocketAddrV4) -> io::Result<()> {
         self.inner.connect(&SockAddr::from(addr))
     }

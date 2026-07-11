@@ -8,7 +8,10 @@ use std::{
         SocketAddrV4,
     },
     os::{
-        fd::BorrowedFd,
+        fd::{
+            AsFd,
+            BorrowedFd,
+        },
         unix::io::AsRawFd,
     },
 };
@@ -30,14 +33,30 @@ pub struct Membership {
 }
 
 impl Membership {
-    /// `ifindex` is the resolved interface index, or 0 when no interface name
-    /// was given.
-    pub(crate) fn new(group: SocketAddrV4, ifindex: u32, source: Option<Ipv4Addr>) -> Self {
-        Membership {
+    /// Describe a membership in `group` (ASM, or SSM when `source` is given),
+    /// optionally on a named interface.
+    pub fn new(
+        group: SocketAddrV4,
+        ifname: Option<&str>,
+        source: Option<Ipv4Addr>,
+    ) -> io::Result<Self> {
+        if !group.ip().is_multicast() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "multicast group required",
+            ));
+        }
+
+        let ifindex = match ifname {
+            Some(name) => crate::iface::interface_index(name).unwrap_or(0),
+            None => 0,
+        };
+
+        Ok(Membership {
             group,
             ifindex,
             source,
-        }
+        })
     }
 
     /// Build an `ip_mreqn` from the stored membership fields.
@@ -62,15 +81,10 @@ impl Membership {
         }
     }
 
-    /// Join multicast group.
-    pub(crate) fn join(&self, fd: BorrowedFd<'_>) -> io::Result<()> {
-        if !self.group.ip().is_multicast() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "multicast address required to join group",
-            ));
-        }
-
+    /// Join the group on `fd` (`IP_ADD_MEMBERSHIP` for ASM,
+    /// `MCAST_JOIN_SOURCE_GROUP` for SSM).
+    pub fn join(&self, fd: impl AsFd) -> io::Result<()> {
+        let fd = fd.as_fd();
         if let Some(source) = &self.source {
             let gsr = self.group_source_req(source);
             unsafe { setsockopt_ip(fd, libc::MCAST_JOIN_SOURCE_GROUP, &gsr) }
@@ -80,8 +94,10 @@ impl Membership {
         }
     }
 
-    /// Leave multicast group.
-    pub(crate) fn leave(&self, fd: BorrowedFd<'_>) -> io::Result<()> {
+    /// Leave the group on `fd` (`IP_DROP_MEMBERSHIP` for ASM,
+    /// `MCAST_LEAVE_SOURCE_GROUP` for SSM).
+    pub fn leave(&self, fd: impl AsFd) -> io::Result<()> {
+        let fd = fd.as_fd();
         if let Some(source) = &self.source {
             let gsr = self.group_source_req(source);
             unsafe { setsockopt_ip(fd, libc::MCAST_LEAVE_SOURCE_GROUP, &gsr) }
@@ -91,9 +107,10 @@ impl Membership {
         }
     }
 
-    /// Renew multicast membership by re-issuing the join (IP_ADD_MEMBERSHIP for
-    /// ASM, MCAST_JOIN_SOURCE_GROUP for SSM).
-    pub(crate) fn renew(&self, fd: BorrowedFd<'_>) -> io::Result<()> {
+    /// Renew the membership on `fd` by re-issuing the join
+    /// (`IP_ADD_MEMBERSHIP` for ASM, `MCAST_JOIN_SOURCE_GROUP` for SSM).
+    pub fn renew(&self, fd: impl AsFd) -> io::Result<()> {
+        let fd = fd.as_fd();
         if let Some(source) = &self.source {
             let gsr = self.group_source_req(source);
             unsafe { setsockopt_ip(fd, libc::MCAST_JOIN_SOURCE_GROUP, &gsr) }
@@ -104,35 +121,19 @@ impl Membership {
     }
 }
 
-/// Renew a multicast membership directly on a borrowed fd, without owning a
-/// [`RecvSocket`].
+/// Renew a multicast membership directly on a borrowed fd.
 ///
-/// Builds a one-shot [`Membership`] from `group`/`ifname`/`source` (resolving
-/// the interface name to its index, best-effort, mirroring
-/// [`RecvSocket::join`](crate::RecvSocket::join)) and re-issues the join. The
-/// renew task uses this so it can refresh the membership on the context's socket
-/// fd without taking ownership of the socket. Returns an error if `group` is not
-/// a multicast address.
+/// Builds a one-shot [`Membership`] from `group`/`ifname`/`source` - resolving
+/// the interface name on every call, so a recreated interface is picked up -
+/// and re-issues the join. Returns an error if `group` is not a multicast
+/// address.
 pub fn renew_membership(
-    fd: BorrowedFd<'_>,
+    fd: impl AsFd,
     group: SocketAddrV4,
     ifname: Option<&str>,
     source: Option<Ipv4Addr>,
 ) -> io::Result<()> {
-    if !group.ip().is_multicast() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "multicast group required",
-        ));
-    }
-
-    let ifindex = match ifname {
-        Some(name) => crate::iface::interface_index(name).unwrap_or(0),
-        None => 0,
-    };
-
-    let m = Membership::new(group, ifindex, source);
-    m.renew(fd)
+    Membership::new(group, ifname, source)?.renew(fd)
 }
 
 /// Build a zeroed `sockaddr_in` carrying an IPv4 address and port (host order
@@ -185,6 +186,53 @@ unsafe fn setsockopt_ip<T>(fd: BorrowedFd<'_>, opt: libc::c_int, val: &T) -> io:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_non_multicast_is_err() {
+        // 10.0.0.1 is not multicast: the constructor must reject it, so no
+        // setsockopt is ever issued with a unicast group.
+        let group = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 1234);
+        let m = Membership::new(group, None, None);
+        assert!(m.is_err());
+    }
+
+    #[test]
+    fn new_unknown_ifname_degrades_to_index_zero() {
+        let group = SocketAddrV4::new(Ipv4Addr::new(239, 255, 0, 1), 1234);
+        let m = Membership::new(group, Some("no-such-if0"), None).expect("multicast group");
+        assert_eq!(m.ifindex, 0);
+    }
+
+    #[test]
+    fn join_renew_leave_lo_tolerant() {
+        let sock = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).expect("bind");
+        let group = SocketAddrV4::new(Ipv4Addr::new(239, 255, 0, 1), 1234);
+        let m = Membership::new(group, Some("lo"), None).expect("multicast group");
+        match m.join(&sock) {
+            Ok(()) => {
+                // a held membership rejects the duplicate add
+                let dup = m.renew(&sock).expect_err("duplicate add");
+                assert_eq!(dup.kind(), io::ErrorKind::AddrInUse);
+                m.leave(&sock).expect("leave after join");
+                // renew re-establishes a dropped membership
+                m.renew(&sock).expect("renew after leave");
+                m.leave(&sock).expect("final leave");
+            }
+            Err(e) => {
+                let raw = e.raw_os_error();
+                if matches!(
+                    raw,
+                    Some(libc::ENODEV) | Some(libc::EADDRNOTAVAIL) | Some(libc::EPERM)
+                ) {
+                    eprintln!(
+                        "skip join_renew_leave_lo_tolerant: environment lacks capability ({e})"
+                    );
+                } else {
+                    panic!("unexpected multicast join error: {e}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn group_source_req_layout() {

@@ -1,9 +1,10 @@
 //! udp - a thin UDP socket builder.
 //!
 //! AF_INET UDP socket construction, multicast (ASM/SSM) membership and
-//! multicast egress selection, interface name resolution. The receive path
-//! ([`RecvSocket`]) builds and joins; the send path ([`SendSocket`]) configures
-//! egress and sends. I/O is driven by the caller; this crate only builds and
+//! multicast egress selection, interface name resolution. [`RecvSocket`]
+//! builds the receive socket and [`SendSocket`] configures egress;
+//! [`Membership`] carries a group membership and applies it to any socket fd.
+//! I/O is driven by the caller; this crate only builds and
 //! configures the socket.
 
 mod iface;

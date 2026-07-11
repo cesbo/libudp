@@ -2,10 +2,7 @@
 
 use std::{
     io,
-    net::{
-        Ipv4Addr,
-        SocketAddrV4,
-    },
+    net::SocketAddrV4,
     os::{
         fd::{
             AsFd,
@@ -25,11 +22,6 @@ use socket2::{
     SockAddr,
     Socket,
     Type,
-};
-
-use crate::{
-    iface,
-    multicast::Membership,
 };
 
 /// A blocking AF_INET UDP receive socket.
@@ -92,52 +84,6 @@ impl RecvSocket {
         }
     }
 
-    /// Join a multicast group (ASM, or SSM when `source` is given), optionally
-    /// on a named interface.
-    ///
-    /// When `ifname` is given the socket is also bound to that device
-    /// (`SO_BINDTODEVICE`, best-effort) for both ASM and SSM joins. The port of
-    /// `group` is used only for SSM; for ASM it is ignored.
-    ///
-    /// Returns an error if `group` is not a multicast address.
-    pub fn join(
-        &self,
-        group: SocketAddrV4,
-        ifname: Option<&str>,
-        source: Option<Ipv4Addr>,
-    ) -> io::Result<Membership> {
-        if !group.ip().is_multicast() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "multicast group required",
-            ));
-        }
-
-        let ifindex = match ifname {
-            Some(name) => {
-                let ifindex = iface::interface_index(name).unwrap_or(0);
-                let _ = self.bind_device(name);
-                ifindex
-            }
-            None => 0,
-        };
-
-        let m = Membership::new(group, ifindex, source);
-        m.join(self.as_fd())?;
-
-        Ok(m)
-    }
-
-    /// Leave a multicast group (ASM or SSM).
-    pub fn leave(&self, m: &Membership) -> io::Result<()> {
-        m.leave(self.as_fd())
-    }
-
-    /// Renew a multicast membership (re-issue the join; ASM or SSM).
-    pub fn renew(&self, m: &Membership) -> io::Result<()> {
-        m.renew(self.as_fd())
-    }
-
     /// Convert into a [`std::net::UdpSocket`].
     pub fn into_std(self) -> std::net::UdpSocket {
         std::net::UdpSocket::from(self.inner)
@@ -158,7 +104,10 @@ impl AsFd for RecvSocket {
 
 #[cfg(test)]
 mod tests {
-    use std::net::UdpSocket;
+    use std::net::{
+        Ipv4Addr,
+        UdpSocket,
+    };
 
     use super::*;
 
@@ -245,41 +194,5 @@ mod tests {
             got >= want,
             "readback {got} should be >= requested {want} (no halving)"
         );
-    }
-
-    #[test]
-    fn join_non_multicast_is_err() {
-        let sock = RecvSocket::new().expect("new");
-        sock.bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
-            .expect("bind");
-        // 10.0.0.1 is not multicast: join must return Err(InvalidInput), no
-        // setsockopt issued.
-        let group = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 1234);
-        let m = sock.join(group, None, None);
-        assert!(m.is_err());
-    }
-
-    #[test]
-    fn multicast_join_lo_tolerant() {
-        let sock = RecvSocket::new().expect("new");
-        sock.bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
-            .expect("bind");
-        let group = SocketAddrV4::new(Ipv4Addr::new(239, 255, 0, 1), 1234);
-        match sock.join(group, Some("lo"), None) {
-            Ok(_membership) => { /* joined */ }
-            Err(e) => {
-                let raw = e.raw_os_error();
-                if matches!(
-                    raw,
-                    Some(libc::ENODEV) | Some(libc::EADDRNOTAVAIL) | Some(libc::EPERM)
-                ) {
-                    eprintln!(
-                        "skip multicast_join_lo_tolerant: environment lacks capability ({e})"
-                    );
-                } else {
-                    panic!("unexpected multicast join error: {e}");
-                }
-            }
-        }
     }
 }
